@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Titipin Sman7 - Jasa Titip Sekolah</title>
+    <!-- Google Fonts: Space Grotesk -->
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;700&display=swap" rel="stylesheet">
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, collection, addDoc, updateDoc, deleteDoc, onSnapshot, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Tailwind Config for Neo-Brutalism
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Space Grotesk', 'sans-serif'],
+                    },
+                    colors: {
+                        brandYellow: '#FFE600',
+                        brandBlue: '#3B82F6',
+                        brandPink: '#FF00E5',
+                        brandGreen: '#00FF66',
+                    },
+                    boxShadow: {
+                        'brutal': '4px 4px 0px 0px #000000',
+                        'brutal-lg': '8px 8px 0px 0px #000000',
+                    }
+                }
+            }
+        }
+
+        // --- Firebase Setup ---
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'titipin-sman7-default';
+
+        // Paths
+        const productsPath = ['artifacts', appId, 'public', 'data', 'products'];
+        const ordersPath = ['artifacts', appId, 'public', 'data', 'orders'];
+        const settingsPath = ['artifacts', appId, 'public', 'data', 'config', 'settings'];
+
+        // State Management
+        let user = null;
+        let products = [];
+        let cart = [];
+        let currentView = 'home';
+        let adminSettings = { qrisUrl: 'https://via.placeholder.com/250?text=QRIS+BELUM+DISET' };
+        let isAdminLoggedIn = false;
+
+        // DOM Elements
+        const appContainer = document.getElementById('app-content');
+        const cartCount = document.getElementById('cart-count');
+
+        // Initial Auth
+        async function initAuth() {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (err) {
+                console.error("Auth error:", err);
+            }
+        }
+
+        onAuthStateChanged(auth, (u) => {
+            user = u;
+            if (user) {
+                listenToData();
+                renderView();
+            }
+        });
+
+        function listenToData() {
+            if (!user) return;
+
+            // Listen Products
+            onSnapshot(collection(db, ...productsPath), (snapshot) => {
+                products = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+                renderView();
+            }, (err) => {
+                console.error("Gagal mengambil produk:", err.message);
+            });
+
+            // Listen Settings
+            onSnapshot(doc(db, ...settingsPath), (snapshot) => {
+                if (snapshot.exists()) {
+                    adminSettings = snapshot.data();
+                    if (currentView === 'admin' || currentView === 'buka-lapak') renderView();
+                }
+            }, (err) => {
+                console.error("Gagal mengambil setting:", err.message);
+            });
+        }
+
+        window.navigate = (view) => {
+            if (view === 'admin' && !isAdminLoggedIn) {
+                showAdminModal();
+                return;
+            }
+            currentView = view;
+            window.scrollTo(0, 0);
+            renderView();
+        };
+
+        // Admin Auth Functions
+        function showAdminModal() {
+            document.getElementById('admin-modal').classList.remove('hidden');
+            document.getElementById('admin-pass').focus();
+        }
+
+        window.closeAdminModal = () => {
+            document.getElementById('admin-modal').classList.add('hidden');
+            document.getElementById('admin-pass').value = '';
+        };
+
+        window.checkAdminPass = () => {
+            const pass = document.getElementById('admin-pass').value;
+            if (pass === "sman7juara") {
+                isAdminLoggedIn = true;
+                closeAdminModal();
+                navigate('admin');
+            } else {
+                showToast("Password Salah!", "bg-red-500");
+                document.getElementById('admin-pass').value = '';
+            }
+        };
+
+        window.logoutAdmin = () => {
+            isAdminLoggedIn = false;
+            navigate('home');
+        };
+
+        window.addToCart = (productId) => {
+            const product = products.find(p => p.id === productId);
+            if (product.stok <= 0) return showToast("Stok habis!", "bg-red-500");
+            
+            const existing = cart.find(item => item.id === productId);
+            if (existing) {
+                if (existing.quantity < product.stok) existing.quantity++;
+            } else {
+                cart.push({ ...product, quantity: 1 });
+            }
+            updateCartCount();
+            showToast("Berhasil ditambah ke keranjang!", "bg-brandGreen");
+        };
+
+        window.removeFromCart = (id) => {
+            cart = cart.filter(item => item.id !== id);
+            updateCartCount();
+            renderView();
+        };
+
+        function updateCartCount() {
+            const total = cart.reduce((sum, item) => sum + item.quantity, 0);
+            cartCount.textContent = total;
+            cartCount.classList.toggle('hidden', total === 0);
+        }
+
+        // Global Toast Notification
+        window.showToast = (message, bgColor = "bg-black") => {
+            const toast = document.createElement('div');
+            toast.className = `${bgColor} text-white border-4 border-black p-4 font-bold shadow-brutal fixed bottom-4 right-4 z-[200] animate-bounce`;
+            toast.innerHTML = `<i class="fas fa-bell mr-2"></i> ${message}`;
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), 3000);
+        };
+
+        function renderView() {
+            if (!user) {
+                appContainer.innerHTML = `
+                    <div class="flex flex-col items-center justify-center h-64 font-bold">
+                        <div class="animate-spin text-4xl mb-4"><i class="fas fa-circle-notch"></i></div>
+                        <p>Menghubungkan ke Server...</p>
+                    </div>`;
+                return;
+            }
+
+            appContainer.innerHTML = '';
+            
+            switch (currentView) {
+                case 'home': renderHome(); break;
+                case 'buka-lapak': renderBukaLapak(); break;
+                case 'cart': renderCart(); break;
+                case 'checkout': renderCheckout(); break;
+                case 'admin': renderAdmin(); break;
+                case 'success': renderSuccess(); break;
+            }
+        }
+
+        function renderHome() {
+            const verifiedProducts = products.filter(p => p.verified);
+            appContainer.innerHTML = `
+                <section class="mb-12">
+                    <div class="bg-brandYellow border-4 border-black p-8 shadow-brutal-lg mb-8">
+                        <h1 class="text-4xl md:text-6xl font-bold mb-4 uppercase tracking-tighter italic">Titipin Sman7</h1>
+                        <p class="text-xl font-bold">Jasa Titip Terpercaya di Lingkungan Sekolah. Beli atau Jual, Semua Bisa!</p>
+                        <div class="mt-6 flex flex-wrap gap-4">
+                            <button onclick="navigate('buka-lapak')" class="bg-brandPink text-white border-4 border-black px-6 py-3 font-bold hover:translate-x-1 hover:translate-y-1 hover:shadow-none shadow-brutal transition-all">
+                                <i class="fas fa-store mr-2"></i> BUKA LAPAK
+                            </button>
+                            <button onclick="document.getElementById('catalog').scrollIntoView({behavior:'smooth'})" class="bg-brandBlue text-white border-4 border-black px-6 py-3 font-bold hover:translate-x-1 hover:translate-y-1 hover:shadow-none shadow-brutal transition-all">
+                                <i class="fas fa-shopping-bag mr-2"></i> LIHAT KATALOG
+                            </button>
+                        </div>
+                    </div>
+                </section>
+
+                <section id="catalog">
+                    <h2 class="text-3xl font-bold mb-6 bg-black text-white inline-block px-4 py-1 uppercase">Katalog Barang</h2>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+                        ${verifiedProducts.length === 0 ? '<p class="text-xl font-bold p-8 border-4 border-dashed border-black bg-white">Belum ada barang tersedia...</p>' : ''}
+                        ${verifiedProducts.map(p => `
+                            <div class="bg-white border-4 border-black p-4 shadow-brutal flex flex-col hover:scale-[1.02] transition-transform">
+                                <img src="${p.image}" class="w-full h-48 object-cover border-4 border-black mb-4 bg-gray-100" alt="${p.namaBarang}">
+                                <h3 class="text-xl font-bold uppercase mb-1 truncate">${p.namaBarang}</h3>
+                                <p class="text-sm font-bold text-gray-600 mb-2 italic">Penjual: ${p.namaPenjual}</p>
+                                <div class="mt-auto">
+                                    <p class="text-2xl font-bold text-brandBlue mb-4">Rp ${p.harga.toLocaleString()}</p>
+                                    <div class="flex justify-between items-center">
+                                        <span class="font-bold bg-gray-100 px-2 border-2 border-black">Stok: ${p.stok}</span>
+                                        <button onclick="addToCart('${p.id}')" class="bg-brandGreen border-2 border-black px-4 py-2 font-bold shadow-brutal hover:shadow-none hover:translate-x-1 hover:translate-y-1 transition-all">
+                                            + KERANJANG
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                </section>
+            `;
+        }
+
+        async function renderBukaLapak() {
+            appContainer.innerHTML = `
+                <div class="max-w-2xl mx-auto">
+                    <!-- Progress Bar -->
+                    <div class="flex mb-8 border-4 border-black overflow-hidden shadow-brutal">
+                        <div id="pb-1" class="flex-1 bg-brandYellow p-2 text-center font-bold border-r-4 border-black">1. DATA</div>
+                        <div id="pb-2" class="flex-1 bg-white p-2 text-center font-bold">2. BAYAR</div>
+                    </div>
+
+                    <div id="step1" class="bg-white border-4 border-black p-8 shadow-brutal-lg">
+                        <h2 class="text-3xl font-bold mb-6 uppercase">Daftarkan Barang</h2>
+                        <form id="form-jual" class="space-y-4">
+                            <div>
+                                <label class="block font-bold mb-1">Nama Lengkap Anda</label>
+                                <input type="text" id="j-nama" required class="w-full border-4 border-black p-3 focus:bg-brandYellow outline-none transition-colors font-bold">
+                            </div>
+                            <div>
+                                <label class="block font-bold mb-1">Nomor WA (Aktif)</label>
+                                <input type="number" id="j-wa" placeholder="08..." required class="w-full border-4 border-black p-3 focus:bg-brandYellow outline-none transition-colors font-bold">
+                            </div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block font-bold mb-1">Nama Barang</label>
+                                    <input type="text" id="j-barang" required class="w-full border-4 border-black p-3 focus:bg-brandYellow outline-none transition-colors font-bold">
+                                </div>
+                                <div>
+                                    <label class="block font-bold mb-1">Harga (Rp)</label>
+                                    <input type="number" id="j-harga" required class="w-full border-4 border-black p-3 focus:bg-brandYellow outline-none transition-colors font-bold">
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block font-bold mb-1">Stok</label>
+                                    <input type="number" id="j-stok" required class="w-full border-4 border-black p-3 focus:bg-brandYellow outline-none transition-colors font-bold">
+                                </div>
+                                <div>
+                                    <label class="block font-bold mb-1">Foto Barang</label>
+                                    <input type="file" id="j-foto" accept="image/*" required class="w-full border-4 border-black p-2 cursor-pointer font-bold bg-white">
+                                </div>
+                            </div>
+                            <button type="submit" class="w-full bg-brandPink text-white border-4 border-black p-4 font-bold text-xl shadow-brutal hover:shadow-none hover:translate-x-1 hover:translate-y-1 transition-all">
+                                LANJUT PEMBAYARAN FEE
+                            </button>
+                        </form>
+                    </div>
+
+                    <div id="step2" class="hidden bg-white border-4 border-black p-8 shadow-brutal-lg">
+                        <h2 class="text-3xl font-bold mb-2 uppercase italic">Pembayaran Fee</h2>
+                        <p class="mb-6 font-bold text-red-600 uppercase bg-red-50 inline-block px-2">Wajib Bayar Jasa Verifikasi: Rp 3.000</p>
+                        
+                        <div class="flex flex-col items-center bg-gray-100 border-4 border-dashed border-black p-6 mb-6">
+                            <img src="${adminSettings.qrisUrl}" class="w-64 h-64 object-contain border-4 border-black mb-4 bg-white" alt="QRIS">
+                            <div class="bg-black text-white p-4 w-full text-center shadow-brutal">
+                                <p class="text-xs uppercase mb-1">Gunakan Berita Transfer (Wajib):</p>
+                                <p id="berita-tf" class="text-2xl font-bold text-brandYellow font-mono tracking-widest"></p>
+                            </div>
+                        </div>
+
+                        <p class="text-sm mb-6 font-bold text-center">Scan QRIS di atas. Pastikan nominal dan berita transfer sesuai. Barang akan diproses admin setelah konfirmasi.</p>
+                        
+                        <button id="btn-konfirmasi-jual" class="w-full bg-brandGreen border-4 border-black p-4 font-bold text-xl shadow-brutal hover:shadow-none hover:translate-x-1 hover:translate-y-1 transition-all">
+                            SAYA SUDAH TRANSFER
+                        </button>
+                    </div>
+
+                    <!-- SUCCESS OVERLAY -->
+                    <div id="jual-success-overlay" class="hidden flex flex-col items-center justify-center space-y-4 animate-in fade-in zoom-in duration-300">
+                        <div class="bg-brandGreen border-8 border-black p-12 shadow-brutal-lg text-center transform -rotate-2">
+                            <i class="fas fa-check-circle text-8xl mb-6"></i>
+                            <h2 class="text-4xl font-black uppercase mb-2">DATA TERKIRIM!</h2>
+                            <p class="font-bold text-xl mb-6">Tunggu Admin SMAN7 Memverifikasi Barang Anda.</p>
+                            <button onclick="navigate('home')" class="bg-black text-white px-8 py-4 font-bold border-4 border-black shadow-brutal hover:shadow-none transition-all">KEMBALI KE HOME</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            const form = document.getElementById('form-jual');
+            let tempProductData = {};
+
+            form.onsubmit = async (e) => {
+                e.preventDefault();
+                const file = document.getElementById('j-foto').files[0];
+                const reader = new FileReader();
+                
+                reader.onload = async (event) => {
+                    const beritaCode = `TRX-${Math.floor(Math.random() * 9999).toString().padStart(4, '0')}`;
+                    tempProductData = {
+                        namaPenjual: document.getElementById('j-nama').value,
+                        waPenjual: document.getElementById('j-wa').value,
+                        namaBarang: document.getElementById('j-barang').value,
+                        harga: parseInt(document.getElementById('j-harga').value),
+                        stok: parseInt(document.getElementById('j-stok').value),
+                        image: event.target.result,
+                        verified: false,
+                        timestamp: Date.now()
+                    };
+
+                    document.getElementById('berita-tf').textContent = beritaCode;
+                    document.getElementById('step1').classList.add('hidden');
+                    document.getElementById('step2').classList.remove('hidden');
+                    document.getElementById('pb-2').classList.add('bg-brandYellow');
+                    document.getElementById('pb-1').classList.replace('bg-brandYellow', 'bg-white');
+                };
+                reader.readAsDataURL(file);
+            };
+
+            document.getElementById('btn-konfirmasi-jual').onclick = async () => {
+                if (!user) return showToast("Menunggu koneksi...", "bg-red-500");
+                
+                const btn = document.getElementById('btn-konfirmasi-jual');
+                btn.disabled = true;
+                btn.innerHTML = '<i class="fas fa-spinner animate-spin"></i> MEMPROSES...';
+
+                try {
+                    await addDoc(collection(db, ...productsPath), tempProductData);
+                    
+                    // Hide payment view, show success check
+                    document.getElementById('step2').classList.add('hidden');
+                    document.querySelector('.max-w-2xl .flex.mb-8').classList.add('hidden'); // hide progress bar
+                    document.getElementById('jual-success-overlay').classList.remove('hidden');
+                    
+                    showToast("Laporan Berhasil!", "bg-brandGreen");
+                } catch (err) {
+                    btn.disabled = false;
+                    btn.textContent = 'SAYA SUDAH TRANSFER';
+                    alert("Error: " + err.message);
+                }
+            };
+        }
+
+        function renderCart() {
+            const total = cart.reduce((sum, item) => sum + (item.harga * item.quantity), 0);
+            appContainer.innerHTML = `
+                <div class="max-w-2xl mx-auto">
+                    <h2 class="text-3xl font-bold mb-6 bg-black text-white inline-block px-4 py-1 uppercase">Keranjang Anda</h2>
+                    <div class="bg-white border-4 border-black shadow-brutal-lg overflow-hidden mb-6">
+                        ${cart.length === 0 ? '<div class="p-12 text-center font-bold uppercase"><i class="fas fa-shopping-basket text-4xl mb-4 block opacity-20"></i>Keranjang masih kosong</div>' : 
+                          cart.map(item => `
+                            <div class="flex items-center p-4 border-b-4 border-black last:border-0">
+                                <img src="${item.image}" class="w-16 h-16 object-cover border-2 border-black mr-4 bg-gray-100">
+                                <div class="flex-grow">
+                                    <h4 class="font-bold uppercase">${item.namaBarang}</h4>
+                                    <p class="text-sm font-bold text-brandBlue">Rp ${item.harga.toLocaleString()} x ${item.quantity}</p>
+                                </div>
+                                <button onclick="removeFromCart('${item.id}')" class="bg-red-500 text-white p-2 border-2 border-black shadow-brutal hover:shadow-none transition-all">
+                                    <i class="fas fa-trash"></i>
+                                </button>
+                            </div>
+                        `).join('')}
+                    </div>
+
+                    ${cart.length > 0 ? `
+                        <div class="bg-brandYellow border-4 border-black p-6 shadow-brutal mb-6">
+                            <div class="flex justify-between items-center text-2xl font-bold uppercase">
+                                <span>TOTAL:</span>
+                                <span>Rp ${total.toLocaleString()}</span>
+                            </div>
+                        </div>
+                        <button onclick="navigate('checkout')" class="w-full bg-brandGreen border-4 border-black p-4 font-bold text-xl shadow-brutal hover:shadow-none hover:translate-x-1 hover:translate-y-1 transition-all uppercase">
+                            LANJUT JADWAL COD
+                        </button>
+                    ` : `
+                        <button onclick="navigate('home')" class="w-full bg-brandBlue text-white border-4 border-black p-4 font-bold text-xl shadow-brutal hover:shadow-none transition-all uppercase">
+                            CARI BARANG LAGI
+                        </button>
+                    `}
+                </div>
+            `;
+        }
+
+        function renderCheckout() {
+            if (cart.length === 0) return navigate('home');
+
+            appContainer.innerHTML = `
+                <div class="max-w-2xl mx-auto">
+                    <div class="bg-white border-4 border-black p-8 shadow-brutal-lg">
+                        <h2 class="text-3xl font-bold mb-6 uppercase tracking-tighter italic">Jadwal Pertemuan (COD)</h2>
+                        <form id="form-checkout" class="space-y-4">
+                            <div>
+                                <label class="block font-bold mb-1 uppercase text-xs">Nama Pembeli</label>
+                                <input type="text" id="c-nama" required class="w-full border-4 border-black p-3 outline-none focus:bg-brandBlue focus:text-white transition-colors font-bold">
+                            </div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block font-bold mb-1 uppercase text-xs">Kelas</label>
+                                    <select id="c-kelas" class="w-full border-4 border-black p-3 bg-white font-bold">
+                                        <option>10</option>
+                                        <option>11</option>
+                                        <option>12</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block font-bold mb-1 uppercase text-xs">Nomor WhatsApp</label>
+                                    <input type="number" id="c-wa" placeholder="08..." required class="w-full border-4 border-black p-3 outline-none focus:bg-brandBlue focus:text-white transition-colors font-bold">
+                                </div>
+                            </div>
+                            <div>
+                                <label class="block font-bold mb-1 uppercase text-xs">Titik Lokasi COD</label>
+                                <select id="c-lokasi-select" class="w-full border-4 border-black p-3 bg-white mb-2 font-bold" onchange="toggleManualLocation(this.value)">
+                                    <option value="Taman Bhineka">Taman Bhineka</option>
+                                    <option value="Patung Naga">Patung Naga</option>
+                                    <option value="Kantin">Kantin</option>
+                                    <option value="Lainnya">Ketik Manual...</option>
+                                </select>
+                                <input type="text" id="c-lokasi-manual" placeholder="Sebutkan lokasi..." class="hidden w-full border-4 border-black p-3 outline-none focus:bg-brandBlue focus:text-white font-bold">
+                            </div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block font-bold mb-1 uppercase text-xs">Tanggal</label>
+                                    <input type="date" id="c-tgl" required class="w-full border-4 border-black p-3 font-bold">
+                                </div>
+                                <div>
+                                    <label class="block font-bold mb-1 uppercase text-xs">Jam</label>
+                                    <input type="time" id="c-jam" required class="w-full border-4 border-black p-3 font-bold">
+                                </div>
+                            </div>
+                            <button type="submit" class="w-full bg-brandPink text-white border-4 border-black p-4 font-bold text-xl shadow-brutal hover:shadow-none hover:translate-x-1 hover:translate-y-1 transition-all uppercase">
+                                KONFIRMASI PESANAN
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            `;
+
+            window.toggleManualLocation = (val) => {
+                const manual = document.getElementById('c-lokasi-manual');
+                if (val === 'Lainnya') manual.classList.remove('hidden');
+                else manual.classList.add('hidden');
+            };
+
+            document.getElementById('form-checkout').onsubmit = async (e) => {
+                e.preventDefault();
+                if (!user) return showToast("Menunggu koneksi...", "bg-red-500");
+
+                const lokasi = document.getElementById('c-lokasi-select').value === 'Lainnya' ? 
+                               document.getElementById('c-lokasi-manual').value : 
+                               document.getElementById('c-lokasi-select').value;
+                
+                const orderData = {
+                    pembeli: {
+                        nama: document.getElementById('c-nama').value,
+                        kelas: document.getElementById('c-kelas').value,
+                        wa: document.getElementById('c-wa').value,
+                    },
+                    items: cart,
+                    lokasi: lokasi,
+                    tanggal: document.getElementById('c-tgl').value,
+                    jam: document.getElementById('c-jam').value,
+                    total: cart.reduce((sum, item) => sum + (item.harga * item.quantity), 0),
+                    timestamp: Date.now()
+                };
+
+                try {
+                    await addDoc(collection(db, ...ordersPath), orderData);
+                    window.lastOrder = orderData;
+                    cart = [];
+                    updateCartCount();
+                    navigate('success');
+                } catch (err) {
+                    alert("Error: " + err.message);
+                }
+            };
+        }
+
+        function renderSuccess() {
+            const order = window.lastOrder;
+            if (!order) return navigate('home');
+
+            const penjualWa = order.items[0].waPenjual;
+            const text = encodeURIComponent(`Halo! Saya ${order.pembeli.nama} (Kelas ${order.pembeli.kelas}). Saya memesan: ${order.items.map(i => i.namaBarang).join(', ')} lewat Titipin Sman7. Janjian di ${order.lokasi} jam ${order.jam} ya!`);
+            const waLink = `https://wa.me/${penjualWa.startsWith('0') ? '62' + penjualWa.slice(1) : penjualWa}?text=${text}`;
+
+            appContainer.innerHTML = `
+                <div class="max-w-2xl mx-auto text-center">
+                    <div class="bg-brandGreen border-4 border-black p-8 shadow-brutal-lg transform rotate-1">
+                        <i class="fas fa-check-circle text-6xl mb-4 animate-ping absolute opacity-30"></i>
+                        <i class="fas fa-check-circle text-6xl mb-4 relative"></i>
+                        <h2 class="text-3xl font-bold mb-2 uppercase">Pesanan Sukses!</h2>
+                        <p class="font-bold mb-6 text-xl">Segera hubungi penjual untuk konfirmasi.</p>
+                        
+                        <div class="bg-white border-4 border-black p-6 text-left mb-8 space-y-2 shadow-brutal">
+                            <p><strong>Lokasi COD:</strong> ${order.lokasi}</p>
+                            <p><strong>Waktu:</strong> ${order.tanggal} @ ${order.jam}</p>
+                            <p><strong>Total:</strong> Rp ${order.total.toLocaleString()}</p>
+                        </div>
+
+                        <div class="flex flex-col gap-4">
+                            <a href="${waLink}" target="_blank" class="bg-black text-white border-4 border-black p-4 font-bold text-xl shadow-brutal hover:shadow-none hover:translate-x-1 hover:translate-y-1 transition-all uppercase">
+                                <i class="fab fa-whatsapp mr-2"></i> CHAT PENJUAL SEKARANG
+                            </a>
+                            <button onclick="navigate('home')" class="bg-white border-4 border-black p-4 font-bold text-xl shadow-brutal hover:shadow-none hover:translate-x-1 hover:translate-y-1 transition-all uppercase">
+                                KEMBALI KE KATALOG
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function renderAdmin() {
+            appContainer.innerHTML = `
+                <div class="mb-12">
+                    <div class="flex justify-between items-center mb-8 border-b-4 border-black pb-4">
+                        <h2 class="text-3xl md:text-4xl font-black uppercase italic tracking-tighter">Admin Dashboard</h2>
+                        <button onclick="logoutAdmin()" class="bg-black text-white px-4 py-2 font-bold border-4 border-black shadow-brutal hover:shadow-none">KELUAR</button>
+                    </div>
+                    
+                    <div class="bg-white border-4 border-black p-6 shadow-brutal mb-12">
+                        <h3 class="text-2xl font-bold mb-4 uppercase italic">Pengaturan QRIS Sekolah</h3>
+                        <div class="flex flex-col md:flex-row gap-6 items-start">
+                            <div class="w-full md:w-48 h-48 border-4 border-black bg-white flex items-center justify-center overflow-hidden shadow-brutal">
+                                <img src="${adminSettings.qrisUrl}" id="admin-qris-preview" class="w-full h-full object-contain">
+                            </div>
+                            <div class="flex-grow w-full space-y-4">
+                                <div id="drop-zone" class="border-4 border-dashed border-black p-8 text-center cursor-pointer hover:bg-brandYellow transition-colors font-bold uppercase">
+                                    <i class="fas fa-cloud-upload-alt text-3xl mb-2"></i>
+                                    <p>Drop Gambar QRIS di sini<br>atau klik untuk pilih file</p>
+                                    <input type="file" id="admin-qris-file" accept="image/*" class="hidden">
+                                </div>
+                                <div id="upload-status" class="hidden text-sm font-bold bg-brandBlue text-white p-2 text-center border-4 border-black shadow-brutal">
+                                    Memproses gambar...
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-12">
+                        <div>
+                            <h3 class="text-2xl font-bold mb-6 uppercase bg-brandGreen inline-block px-2 border-2 border-black italic">Verifikasi Produk</h3>
+                            <div class="space-y-6">
+                                ${products.filter(p => !p.verified).length === 0 ? '<p class="font-bold p-8 bg-gray-200 border-4 border-dashed border-black opacity-50 uppercase text-center">Tidak ada antrian</p>' : ''}
+                                ${products.filter(p => !p.verified).map(p => `
+                                    <div class="bg-white border-4 border-black p-4 shadow-brutal flex flex-col md:flex-row gap-4 items-center">
+                                        <img src="${p.image}" class="w-24 h-24 object-cover border-4 border-black bg-gray-100">
+                                        <div class="flex-grow">
+                                            <h4 class="font-bold uppercase text-lg leading-tight">${p.namaBarang}</h4>
+                                            <p class="text-[10px] font-bold uppercase opacity-60">Penjual: ${p.namaPenjual}</p>
+                                            <p class="font-bold text-brandBlue">Rp ${p.harga.toLocaleString()}</p>
+                                        </div>
+                                        <div class="flex gap-2">
+                                            <button onclick="verifyProduct('${p.id}', true)" class="bg-brandGreen border-2 border-black p-2 shadow-brutal hover:shadow-none"><i class="fas fa-check"></i></button>
+                                            <button onclick="verifyProduct('${p.id}', false)" class="bg-red-500 text-white border-2 border-black p-2 shadow-brutal hover:shadow-none"><i class="fas fa-times"></i></button>
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+
+                        <div>
+                            <h3 class="text-2xl font-bold mb-6 uppercase bg-brandBlue text-white inline-block px-2 border-2 border-black italic">Data Pesanan</h3>
+                            <div id="admin-orders-list" class="space-y-4">
+                                <p class="animate-pulse font-bold">Menarik data...</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            initAdminUpload();
+            loadAdminOrders();
+        }
+
+        function initAdminUpload() {
+            const dropZone = document.getElementById('drop-zone');
+            const fileInput = document.getElementById('admin-qris-file');
+            const statusBox = document.getElementById('upload-status');
+            const preview = document.getElementById('admin-qris-preview');
+
+            if (!dropZone) return;
+
+            dropZone.onclick = () => fileInput.click();
+
+            const handleFile = (file) => {
+                if (!file.type.startsWith('image/')) return showToast('Hanya file gambar!', 'bg-red-500');
+                
+                statusBox.classList.remove('hidden');
+                const reader = new FileReader();
+                reader.onload = async (e) => {
+                    const base64 = e.target.result;
+                    try {
+                        await setDoc(doc(db, ...settingsPath), { qrisUrl: base64 });
+                        preview.src = base64;
+                        statusBox.textContent = 'BERHASIL DIPERBARUI!';
+                        statusBox.classList.replace('bg-brandBlue', 'bg-brandGreen');
+                        showToast("QRIS Admin Terupdate!", "bg-brandGreen");
+                        setTimeout(() => statusBox.classList.add('hidden'), 2000);
+                    } catch (err) {
+                        alert('Gagal simpan: ' + err.message);
+                        statusBox.classList.add('hidden');
+                    }
+                };
+                reader.readAsDataURL(file);
+            };
+
+            fileInput.onchange = (e) => handleFile(e.target.files[0]);
+            
+            dropZone.ondragover = (e) => { e.preventDefault(); dropZone.classList.add('bg-brandYellow'); };
+            dropZone.ondragleave = () => dropZone.classList.remove('bg-brandYellow');
+            dropZone.ondrop = (e) => {
+                e.preventDefault();
+                dropZone.classList.remove('bg-brandYellow');
+                handleFile(e.dataTransfer.files[0]);
+            };
+        }
+
+        window.verifyProduct = async (id, status) => {
+            try {
+                const docRef = doc(db, ...productsPath, id);
+                if (status) {
+                    await updateDoc(docRef, { verified: true });
+                    showToast("Barang Diverifikasi!", "bg-brandGreen");
+                } else {
+                    await deleteDoc(docRef);
+                    showToast("Barang Ditolak/Hapus.", "bg-red-500");
+                }
+            } catch (err) { alert("Error: " + err.message); }
+        };
+
+        async function loadAdminOrders() {
+            onSnapshot(collection(db, ...ordersPath), (snapshot) => {
+                const container = document.getElementById('admin-orders-list');
+                if (!container) return;
+                const orders = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+                orders.sort((a,b) => b.timestamp - a.timestamp);
+
+                container.innerHTML = orders.length > 0 ? orders.map(o => `
+                    <div class="bg-white border-4 border-black p-4 shadow-brutal">
+                        <div class="flex justify-between items-start mb-2">
+                            <h4 class="font-bold uppercase text-lg leading-tight">${o.pembeli.nama} (${o.pembeli.kelas})</h4>
+                            <span class="bg-black text-white text-[10px] px-2 py-1 uppercase font-bold">${new Date(o.timestamp).toLocaleDateString()}</span>
+                        </div>
+                        <div class="text-xs space-y-1 mb-4 font-bold opacity-70">
+                            <p><i class="fab fa-whatsapp"></i> ${o.pembeli.wa}</p>
+                            <p><i class="fas fa-map-marker-alt"></i> <span class="bg-brandYellow px-1 border border-black">${o.lokasi}</span> @ ${o.jam}</p>
+                        </div>
+                        <div class="border-t-2 border-black pt-2 mb-2">
+                            ${o.items.map(i => `<p class="text-[10px] uppercase font-bold leading-tight">- ${i.namaBarang} (x${i.quantity})</p>`).join('')}
+                        </div>
+                        <div class="flex justify-between items-center border-t-2 border-black pt-2">
+                            <p class="font-bold text-brandBlue">Rp ${o.total.toLocaleString()}</p>
+                            <button onclick="deleteOrder('${o.id}')" class="text-red-500 p-2"><i class="fas fa-trash-alt"></i></button>
+                        </div>
+                    </div>
+                `).join('') : '<p class="font-bold p-4 bg-gray-100 border-4 border-dashed border-black opacity-50 uppercase text-center">Belum ada pesanan</p>';
+            });
+        }
+
+        window.deleteOrder = async (id) => {
+            if (confirm("Hapus data pesanan ini dari riwayat?")) {
+                try {
+                    await deleteDoc(doc(db, ...ordersPath, id));
+                    showToast("Pesanan Dihapus", "bg-black");
+                } catch (err) { alert(err.message); }
+            }
+        };
+
+        window.addEventListener('load', initAuth);
+    </script>
+    <style>
+        body {
+            background-color: #f0f0f0;
+            background-image: radial-gradient(#ccc 1px, transparent 1px);
+            background-size: 20px 20px;
+        }
+        input:focus, select:focus, textarea:focus {
+            box-shadow: 2px 2px 0px 0px #000;
+            transform: translate(-2px, -2px);
+        }
+        ::-webkit-scrollbar { width: 10px; }
+        ::-webkit-scrollbar-track { background: #000; }
+        ::-webkit-scrollbar-thumb { background: #FF00E5; border: 2px solid #000; }
+        .logo-text { text-shadow: 2px 2px 0px #FFE600; }
+        
+        /* Animations */
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .animate-in { animation: fadeIn 0.3s ease-out; }
+    </style>
+</head>
+<body class="font-sans text-black">
+
+    <!-- Navbar -->
+    <nav class="sticky top-0 z-50 bg-white border-b-4 border-black p-4">
+        <div class="container mx-auto flex justify-between items-center">
+            <div class="flex items-center gap-4">
+                <button onclick="navigate('admin')" class="bg-black text-white p-2 border-2 border-black shadow-brutal hover:bg-brandPink transition-all">
+                    <i class="fas fa-lock text-sm"></i>
+                </button>
+                <div onclick="navigate('home')" class="cursor-pointer group">
+                    <span class="text-xl md:text-2xl font-bold uppercase tracking-tighter group-hover:text-brandPink transition-all italic">
+                        TITIPIN <span class="bg-brandYellow px-1 border-2 border-black logo-text">SMAN7</span>
+                    </span>
+                </div>
+            </div>
+            <div class="flex items-center gap-4 font-bold text-xs md:text-sm uppercase">
+                <button onclick="navigate('home')" class="hover:underline hidden lg:block">KATALOG</button>
+                <button onclick="navigate('buka-lapak')" class="bg-brandPink text-white px-2 border-2 border-black shadow-brutal hover:shadow-none hidden lg:block">BUKA LAPAK</button>
+                <button onclick="navigate('cart')" class="relative bg-brandBlue text-white border-2 border-black p-2 px-4 shadow-brutal active:bg-brandGreen">
+                    <i class="fas fa-shopping-cart mr-1"></i>
+                    <span id="cart-count" class="absolute -top-3 -right-3 bg-brandPink text-white text-[10px] w-6 h-6 flex items-center justify-center rounded-full border-2 border-black hidden font-black">0</span>
+                    <span class="hidden md:inline">KERANJANG</span>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main id="app-content" class="container mx-auto px-4 py-8 min-h-screen">
+        <div class="flex flex-col items-center justify-center h-64 font-bold">
+            <div class="animate-spin text-4xl mb-4"><i class="fas fa-circle-notch"></i></div>
+            <p>Memuat Data SMAN7...</p>
+        </div>
+    </main>
+
+    <!-- Modal Login Admin -->
+    <div id="admin-modal" class="hidden fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+        <div class="bg-white border-8 border-black p-8 shadow-[12px_12px_0px_0px_rgba(255,230,0,1)] w-full max-w-sm">
+            <h2 class="text-3xl font-black uppercase mb-6 tracking-tighter italic border-b-4 border-black pb-2">Admin Access</h2>
+            <div class="space-y-4">
+                <div>
+                    <label class="block font-bold mb-1 text-xs uppercase">Secret Key</label>
+                    <input type="password" id="admin-pass" placeholder="••••••••" class="w-full border-4 border-black p-4 font-bold text-xl outline-none focus:bg-brandYellow transition-colors">
+                </div>
+                <div class="flex gap-4 pt-4">
+                    <button onclick="checkAdminPass()" class="flex-1 bg-brandGreen border-4 border-black p-4 font-bold text-lg shadow-brutal hover:shadow-none translate-y-[-4px] hover:translate-y-0 transition-all">MASUK</button>
+                    <button onclick="closeAdminModal()" class="bg-white border-4 border-black px-6 font-bold shadow-brutal hover:shadow-none translate-y-[-4px] hover:translate-y-0 transition-all">BATAL</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="bg-black text-white p-12 mt-12 border-t-8 border-brandYellow">
+        <div class="container mx-auto grid grid-cols-1 md:grid-cols-2 gap-12">
+            <div>
+                <h3 class="text-3xl font-bold mb-4 uppercase italic">Titipin Sman7</h3>
+                <p class="text-gray-400 font-bold uppercase text-xs leading-relaxed italic border-l-4 border-brandPink pl-4">Platform Jasa Titip eksklusif warga SMAN 7. Belanja aman, COD nyaman, perut kenyang!</p>
+            </div>
+            <div class="md:text-right">
+                <p class="font-bold uppercase text-sm mb-2">Lokasi COD Populer:</p>
+                <div class="flex flex-wrap md:justify-end gap-2">
+                    <span class="bg-brandYellow text-black px-2 py-1 font-bold text-[10px] border border-white">TAMAN BHINEKA</span>
+                    <span class="bg-brandPink text-white px-2 py-1 font-bold text-[10px] border border-white">PATUNG NAGA</span>
+                    <span class="bg-brandBlue text-white px-2 py-1 font-bold text-[10px] border border-white">KANTIN</span>
+                </div>
+                <div class="mt-6 flex md:justify-end gap-6 text-2xl">
+                    <i class="fab fa-instagram hover:text-brandPink cursor-pointer transition-colors"></i>
+                    <i class="fab fa-whatsapp hover:text-brandGreen cursor-pointer transition-colors"></i>
+                </div>
+            </div>
+        </div>
+        <div class="text-center mt-12 pt-8 border-t border-gray-800 text-[10px] uppercase tracking-widest font-bold opacity-50">
+            &copy; 2026 Titipin Sman7. Created for SMAN7 Juara.
+        </div>
+    </footer>
+
+</body>
+</html>
